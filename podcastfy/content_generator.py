@@ -13,7 +13,6 @@ import re
 
 from langchain_community.chat_models import ChatLiteLLM
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_community.llms.llamafile import Llamafile
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain import hub
@@ -25,6 +24,23 @@ from abc import ABC, abstractmethod
 
 logger = logging.getLogger(__name__)
 
+# Model-name prefixes that select the local Ollama backend (same convention as LiteLLM)
+OLLAMA_PREFIXES = ("ollama_chat/", "ollama/")
+DEFAULT_OLLAMA_API_BASE = "http://localhost:11434"
+
+
+def is_ollama_model(model_name: Optional[str]) -> bool:
+    """Return True if the model name asks for a model served by Ollama."""
+    return bool(model_name) and model_name.lower().startswith(OLLAMA_PREFIXES)
+
+
+def strip_ollama_prefix(model_name: str) -> str:
+    """Remove the 'ollama/' or 'ollama_chat/' prefix from a model name."""
+    for prefix in OLLAMA_PREFIXES:
+        if model_name.lower().startswith(prefix):
+            return model_name[len(prefix):]
+    return model_name
+
 
 class LLMBackend:
     def __init__(
@@ -33,16 +49,21 @@ class LLMBackend:
         temperature: float,
         max_output_tokens: int,
         model_name: str,
-        api_key_label: str = "GEMINI_API_KEY",
+        api_key_label: Optional[str] = "GEMINI_API_KEY",
+        api_base: Optional[str] = None,
+        num_ctx: Optional[int] = None,
     ):
         """
         Initialize the LLMBackend.
 
         Args:
-                is_local (bool): Whether to use a local LLM or not.
+                is_local (bool): Whether to use a local LLM (served by Ollama) or not.
                 temperature (float): The temperature for text generation.
                 max_output_tokens (int): The maximum number of output tokens.
                 model_name (str): The name of the model to use.
+                api_key_label (Optional[str]): Environment variable holding the API key (remote models).
+                api_base (Optional[str]): Base URL of the Ollama server (local models).
+                num_ctx (Optional[int]): Context window size in tokens (local models).
         """
         self.is_local = is_local
         self.temperature = temperature
@@ -57,7 +78,21 @@ class LLMBackend:
         }
 
         if is_local:
-            self.llm = Llamafile() # replace with ollama
+            # Imported here so remote-only users never see its deprecation notice
+            from langchain_community.chat_models import ChatOllama
+
+            ollama_params = {
+                "model": strip_ollama_prefix(model_name),
+                "base_url": api_base
+                or os.environ.get("OLLAMA_API_BASE")
+                or DEFAULT_OLLAMA_API_BASE,
+                "temperature": temperature,
+                "num_predict": max_output_tokens,
+            }
+            if num_ctx:
+                # Ollama's default context window is small and truncates silently
+                ollama_params["num_ctx"] = num_ctx
+            self.llm = ChatOllama(**ollama_params)
         elif (
             "gemini" in self.model_name.lower()
         ):  # keeping original gemini as a special case while we build confidence on LiteLLM
@@ -72,7 +107,8 @@ class LLMBackend:
             self.llm = ChatLiteLLM(
                 model=self.model_name,
                 temperature=temperature,
-                api_key=os.environ[api_key_label],
+                # Key is optional: self-hosted endpoints usually need none
+                api_key=os.environ.get(api_key_label) if api_key_label else None,
             )
 
 
@@ -99,7 +135,8 @@ class LongFormContentGenerator:
         7. Generate a long conversation - output max_output_tokens tokens
     """
     
-    def __init__(self, chain, llm, config_conversation: Dict[str, Any], ):
+    def __init__(self, chain, llm, config_conversation: Dict[str, Any],
+                 max_context_chars: Optional[int] = None):
         """
         Initialize ConversationGenerator.
         
@@ -111,6 +148,28 @@ class LongFormContentGenerator:
         self.llm = llm
         self.max_num_chunks = config_conversation.get("max_num_chunks", 10)  # Default if not in config
         self.min_chunk_size = config_conversation.get("min_chunk_size", 200)  # Default if not in config
+        # Upper bound on the CONTEXT passed to each call (None = unlimited)
+        self.max_context_chars = max_context_chars
+
+    def _cap_context(self, context: str, keep_tail: bool = True) -> str:
+        """
+        Keep the context within max_context_chars so small-context models are not overflowed.
+
+        Args:
+            context: Context text
+            keep_tail: Keep the end of the text (the latest turns) rather than the start
+
+        Returns:
+            Context no longer than max_context_chars
+        """
+        if not self.max_context_chars or len(context) <= self.max_context_chars:
+            return context
+        if not keep_tail:
+            return context[: self.max_context_chars]
+        tail = context[-self.max_context_chars:]
+        # Start on a speaker boundary so the model never sees a turn cut in half
+        first_tag = re.search(r"<Person[12]>", tail)
+        return tail[first_tag.start():] if first_tag else tail
 
     def __calculate_chunk_size(self, input_content: str) -> int:
         """
@@ -241,7 +300,7 @@ class LongFormContentGenerator:
 
         chunks = self.chunk_content(input_content, chunk_size)
         conversation_parts = []
-        chat_context = input_content
+        chat_context = self._cap_context(input_content, keep_tail=False)
         num_parts = len(chunks)
         print(f"Generating {num_parts} parts")
         
@@ -258,6 +317,7 @@ class LongFormContentGenerator:
                 chat_context = response
             else:
                 chat_context = chat_context + response
+            chat_context = self._cap_context(chat_context)
             print(f"Generated part {i+1}/{num_parts}: Size {len(chunk)} characters.")
             #print(f"[LLM-START] Step: {i+1} ##############################")
             #print(response)
@@ -463,14 +523,17 @@ class LongFormContentStrategy(ContentGenerationStrategy, ContentCleanerMixin):
         - Requires non-empty input text
     """
     
-    def __init__(self, llm, content_generator_config: Dict[str, Any], config_conversation: Dict[str, Any]):
+    def __init__(self, llm, content_generator_config: Dict[str, Any], config_conversation: Dict[str, Any],
+                 max_context_chars: Optional[int] = None):
         """
         Initialize LongFormContentStrategy.
         
         Args:
             content_generator_config (Dict[str, Any]): Configuration for content generation
             config_conversation (Dict[str, Any]): Conversation configuration
+            max_context_chars (Optional[int]): Cap on context carried between parts (None = unlimited)
         """
+        self.max_context_chars = max_context_chars
         self.llm = llm
         self.content_generator_config = content_generator_config
         self.config_conversation = config_conversation
@@ -488,7 +551,10 @@ class LongFormContentStrategy(ContentGenerationStrategy, ContentCleanerMixin):
                 prompt_params: Dict[str, Any],
                 **kwargs) -> str:
         """Generate long-form content."""
-        generator = LongFormContentGenerator(chain, self.llm, self.config_conversation)
+        generator = LongFormContentGenerator(
+            chain, self.llm, self.config_conversation,
+            max_context_chars=self.max_context_chars
+        )
         return generator.generate_long_form(
             input_texts,
             prompt_params
@@ -706,15 +772,18 @@ class ContentGenerator:
     def __init__(
         self, 
         is_local: bool=False, 
-        model_name: str="gemini-2.5-flash", 
-        api_key_label: str="GEMINI_API_KEY",
+        model_name: Optional[str]=None, 
+        api_key_label: Optional[str]="GEMINI_API_KEY",
         conversation_config: Optional[Dict[str, Any]] = None
     ):
         """
         Initialize the ContentGenerator.
 
         Args:
-                api_key (str): API key for Google's Generative AI.
+                is_local (bool): Use a local model served by Ollama.
+                model_name (Optional[str]): Model to use. Defaults to the configured model.
+                    A name starting with "ollama/" selects the Ollama backend.
+                api_key_label (Optional[str]): Environment variable holding the API key (remote models).
                 conversation_config (Optional[Dict[str, Any]]): Custom conversation configuration.
         """
         #os.environ["GOOGLE_API_KEY"] = api_key
@@ -733,13 +802,18 @@ class ContentGenerator:
         if transcripts_dir and not os.path.exists(transcripts_dir):
             os.makedirs(transcripts_dir)
         
-        self.is_local = is_local
-
-                # Initialize LLM backend
-        if not model_name:
-            model_name = self.content_generator_config.get("llm_model")
+        # Initialize LLM backend
+        ollama_config = self.content_generator_config.get("ollama", {}) or {}
+        if is_ollama_model(model_name):
+            is_local = True
         if is_local:
-            model_name = "User provided local model"
+            model_name = strip_ollama_prefix(
+                model_name or ollama_config.get("model", "llama3.1")
+            )
+        elif not model_name:
+            model_name = self.content_generator_config.get("llm_model")
+
+        self.is_local = is_local
 
         llm_backend = LLMBackend(
             is_local=is_local,
@@ -749,9 +823,14 @@ class ContentGenerator:
             ),
             model_name=model_name,
             api_key_label=api_key_label,
+            api_base=ollama_config.get("api_base"),
+            num_ctx=ollama_config.get("num_ctx"),
         )
 
         self.llm = llm_backend.llm
+        max_context_chars = (
+            ollama_config.get("max_context_chars") if is_local else None
+        )
 
 
 
@@ -760,7 +839,8 @@ class ContentGenerator:
             True: LongFormContentStrategy(
                 self.llm,
                 self.content_generator_config,
-                self.config_conversation
+                self.config_conversation,
+                max_context_chars=max_context_chars
             ),
             False: StandardContentStrategy(
                 self.llm,

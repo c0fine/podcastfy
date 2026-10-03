@@ -11,7 +11,7 @@ import uuid
 import typer
 import yaml
 from podcastfy.content_parser.content_extractor import ContentExtractor
-from podcastfy.content_generator import ContentGenerator
+from podcastfy.content_generator import ContentGenerator, is_ollama_model
 from podcastfy.text_to_speech import TextToSpeech
 from podcastfy.utils.config import Config, load_config
 from podcastfy.utils.config_conversation import load_conversation_config
@@ -76,9 +76,20 @@ def process_content(
             with open(transcript_file, "r") as file:
                 qa_content = file.read()
         else:
+            is_local = is_local or is_ollama_model(model_name)
+            if is_local and topic:
+                raise ValueError(
+                    "Topic-based generation relies on Gemini with Google Search and is "
+                    "not available with a local LLM. Provide urls or text instead."
+                )
+            # Short text is expanded with Gemini + Google Search; skip that when local
+            expand_short_text = bool(
+                text and longform and len(text.strip()) < 100 and not is_local
+            )
+
             # Initialize content_extractor if needed
             content_extractor = None
-            if urls or topic or (text and longform and len(text.strip()) < 100):
+            if urls or topic or expand_short_text:
                 content_extractor = ContentExtractor()
 
             content_generator = ContentGenerator(
@@ -96,7 +107,7 @@ def process_content(
                 combined_content += "\n\n".join(contents)
 
             if text:
-                if longform and len(text.strip()) < 100:
+                if expand_short_text:
                     logger.info("Text too short for direct long-form generation. Extracting context...")
                     expanded_content = content_extractor.generate_topic_content(text)
                     combined_content += f"\n\n{expanded_content}"
@@ -121,9 +132,10 @@ def process_content(
             )
 
         if generate_audio:
-            api_key = None
-            if tts_model != "edge":
-                api_key = getattr(config, f"{tts_model.upper().replace('MULTI', '')}_API_KEY")
+            # Providers without a key (edge, kokoro) simply get None
+            api_key = getattr(
+                config, f"{tts_model.upper().replace('MULTI', '')}_API_KEY", None
+            )
 
             text_to_speech = TextToSpeech(
                 model=tts_model,
@@ -160,7 +172,7 @@ def main(
         None,
         "--tts-model",
         "-tts",
-        help="TTS model to use (openai, elevenlabs, edge, or gemini)",
+        help="TTS model to use (openai, elevenlabs, edge, gemini, or kokoro)",
     ),
     transcript_only: bool = typer.Option(
         False, "--transcript-only", help="Generate only a transcript without audio"
@@ -178,7 +190,7 @@ def main(
         False,
         "--local",
         "-l",
-        help="Use a local LLM instead of a remote one (http://localhost:8080)",
+        help="Use a local LLM served by Ollama instead of a remote one (http://localhost:11434)",
     ),
     text: str = typer.Option(
         None, "--text", "-txt", help="Raw text input to be processed"
@@ -339,7 +351,9 @@ def generate_podcast(
 
         # Use provided tts_model if specified, otherwise use the one from config
         if tts_model is None:
-            tts_model = conversation_config.get("default_tts_model", "openai")
+            tts_model = conversation_config.get("text_to_speech", {}).get(
+                "default_tts_model"
+            ) or conversation_config.get("default_tts_model", "openai")
 
         if transcript_file:
             if image_paths:

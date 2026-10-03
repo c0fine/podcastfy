@@ -33,7 +33,7 @@ class TextToSpeech:
 
         Args:
                         model (str): The model to use for text-to-speech conversion.
-                                                Options are 'elevenlabs', 'gemini', 'openai', 'edge' or 'geminimulti'. Defaults to 'openai'.
+                                                Options are 'elevenlabs', 'gemini', 'openai', 'edge', 'kokoro' or 'geminimulti'. Defaults to 'openai'.
                         api_key (Optional[str]): API key for the selected text-to-speech service.
                         conversation_config (Optional[Dict]): Configuration for conversation settings.
         """
@@ -157,6 +157,12 @@ class TextToSpeech:
         qa_pairs = self.provider.split_qa(
             text, self.ending_message, self.provider.get_supported_tags()
         )
+        if not qa_pairs:
+            raise ValueError(
+                "Transcript has no <Person1>...</Person1><Person2>...</Person2> turns, "
+                "so there is nothing to convert to speech. The LLM did not follow the "
+                "transcript format; try again or use a larger model."
+            )
         audio_files = []
         provider_config = self._get_provider_config()
 

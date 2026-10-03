@@ -40,6 +40,11 @@ text_to_speech:
     default_voices:
       question: "en-US-JennyNeural"
       answer: "en-US-EricNeural"
+  kokoro:  # local, served by an OpenAI-compatible server such as mlx-audio
+    default_voices:
+      question: "af_heart"
+      answer: "am_michael"
+    model: "mlx-community/Kokoro-82M-bf16"
   gemini:
     default_voices:
       question: "en-US-Journey-D"

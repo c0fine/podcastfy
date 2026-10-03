@@ -1,68 +1,68 @@
-# Local LLM Support
+# Local LLM and TTS Support
 
-Running local LLMs can offer several advantages such as:
+Podcastfy can run with open-source models on your own machine: [Ollama](https://ollama.com) writes the transcript and [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) produces the audio. No API keys are needed.
+
+Running locally offers:
 - Enhanced privacy and data security
 - Cost control and no API rate limits
-- Greater customization and fine-tuning options
 - Reduced vendor lock-in
 
-We enable serving local LLMs with [llamafile](https://github.com/Mozilla-Ocho/llamafile). In the API, local LLM support is available through the `is_local` parameter. If `is_local=True`, then a local (llamafile) LLM model is used to generate the podcast transcript. Llamafiles of LLM models can be found on [HuggingFace, which today offers 156+ models](https://huggingface.co/models?library=llamafile).
+## Setup
 
-All you need to do is:
-
-1. Download a llamafile from HuggingFace
-2. Make the file executable
-3. Run the file
-
-Here's a simple bash script that shows all 3 setup steps for running TinyLlama-1.1B locally:
+### 1. Ollama (transcript)
 
 ```bash
-# Download a llamafile from HuggingFace
-wget https://huggingface.co/jartine/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/TinyLlama-1.1B-Chat-v1.0.Q5_K_M.llamafile
-
-# Make the file executable. On Windows, instead just rename the file to end in ".exe".
-chmod +x TinyLlama-1.1B-Chat-v1.0.Q5_K_M.llamafile
-
-# Start the model server. Listens at http://localhost:8080 by default.
-./TinyLlama-1.1B-Chat-v1.0.Q5_K_M.llamafile --server --nobrowser
+brew install ollama        # or download from https://ollama.com
+ollama serve               # listens at http://localhost:11434
+ollama pull llama3.1       # any chat model you prefer
 ```
 
-Now you can use the local LLM to generate a podcast transcript (or audio) by setting the `is_local` parameter to `True`.
+### 2. Kokoro (audio)
+
+Kokoro is reached through any OpenAI-compatible speech server. On Apple Silicon, [mlx-audio](https://github.com/Blaizzy/mlx-audio) works well:
+
+```bash
+brew install ffmpeg espeak-ng   # without espeak-ng the server crashes on words missing from its dictionary (e.g. names)
+pip install "mlx-audio[server]" misaki num2words spacy phonemizer-fork espeakng-loader
+mlx_audio.server --host 127.0.0.1 --port 8000
+```
 
 ## Python API
 
 ```python
 from podcastfy.client import generate_podcast
 
-# Generate a tech debate podcast about artificial intelligence
 generate_podcast(
-    urls=["www.souzatharsis.com"],
-    is_local=True  # Using a local LLM
+    urls=["https://example.com/article"],
+    llm_model_name="ollama/llama3.1",  # or is_local=True to use the configured model
+    tts_model="kokoro",
 )
 ```
 
 ## CLI
 
-To use a local LLM model via the command-line interface, you can use the `--local` or `-l` flag. Here's an example of how to generate a transcript using a local LLM:
-
 ```bash
-python -m podcastfy.client --url https://example.com/article1 --transcript-only --local
+python -m podcastfy.client --url https://example.com/article \
+  --local --llm-model-name llama3.1 --tts-model kokoro
 ```
 
-## Notes of caution
+## Configuration
 
-When using local LLM models versus widely known private large language models:
+| Setting | Where | Default |
+|---|---|---|
+| Ollama model | `content_generator.ollama.model` in `config.yaml` | `llama3.1` |
+| Ollama address | `content_generator.ollama.api_base` in `config.yaml`, or `OLLAMA_API_BASE` | `http://localhost:11434` |
+| Context window (tokens) | `content_generator.ollama.num_ctx` in `config.yaml` | `16384` |
+| Longform context cap (characters) | `content_generator.ollama.max_context_chars` in `config.yaml` | `12000` |
+| Kokoro voices and model | `text_to_speech.kokoro` in the conversation config | `af_heart`, `am_michael`, `mlx-community/Kokoro-82M-bf16` |
+| Kokoro server address | `KOKORO_BASE_URL` | `http://localhost:8000/v1` |
 
-1. Performance: Local LLMs often have lower performance compared to large private models due to size and training limitations.
+To make Kokoro the default, set `text_to_speech.default_tts_model: "kokoro"` in your conversation config.
 
-2. Resource requirements: Running local LLMs can be computationally intensive, requiring significant CPU/GPU resources.
+## Limitations
 
-3. Limited capabilities: Local models may struggle with complex tasks or specialized knowledge that larger models handle well.
-
-5. Reduced multimodal abilities: Local LLMs will be assumed to be text-only capable
-
-6. Potential instability: Local models may produce less consistent or stable outputs compared to well-tested private models oftentimes producing transcripts that cannot be used for podcast generation (TTS) out-of-the-box
-
-7. Limited context window: Local models often have smaller context windows, limiting their ability to process long inputs.
-
-Always evaluate the trade-offs between using local LLMs and private models based on your specific use case and requirements. We highly recommend extensively testing your local LLM before productionizing an end-to-end podcast generation and/or manually checking the transcript before passing to TTS model.
+1. Topic-based generation (`topic=` / `--topic`) relies on Gemini with Google Search and is not available with a local LLM.
+2. Images are ignored: a local LLM is assumed to be text-only.
+3. Prompt templates are still downloaded from LangChain Hub, so an internet connection is needed when a run starts.
+4. Smaller models sometimes ignore the `<Person1>`/`<Person2>` transcript format. Podcastfy raises an error when a transcript has no usable turns; rerun or use a larger model. For important work, generate with `--transcript-only` first and check the transcript before producing audio.
+5. Keep `audio_format: "mp3"` when using Kokoro.
