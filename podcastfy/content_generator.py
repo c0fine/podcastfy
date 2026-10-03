@@ -824,7 +824,7 @@ class ContentGenerator:
             or self.content_generator_config.get("max_output_tokens", 8192),
             model_name=model_name,
             api_key_label=api_key_label,
-            api_base=ollama_config.get("api_base"),
+            api_base=os.environ.get("OLLAMA_API_BASE") or ollama_config.get("api_base"),
             num_ctx=ollama_config.get("num_ctx"),
         )
 

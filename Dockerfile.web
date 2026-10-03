@@ -1,0 +1,26 @@
+# Local web UI (drag in a paper, browse generated audio).
+# Ollama and Kokoro run on the host; see the `web` service in docker-compose.yml.
+FROM python:3.12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ffmpeg && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY . /app
+
+# Installs from pyproject.toml (requirements.txt pins a litellm release that no
+# longer resolves). playwright is only used to fetch URLs; "click<8.2" keeps typer happy.
+# The langchain pins are the versions tested with the Hub prompt pull (newer releases
+# refuse to pull public prompts by default).
+RUN pip install . playwright "click<8.2" \
+        "langchain==0.3.30" "langchain-core==0.3.86" "langchain-community==0.3.21" \
+        "langsmith==0.3.45" && \
+    python -m playwright install --with-deps chromium
+
+EXPOSE 8000
+CMD ["uvicorn", "podcastfy.web.app:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import uuid
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from pydub import AudioSegment
 
@@ -77,6 +77,7 @@ def read_aloud(
     model: Optional[str] = None,
     output_dir: str = "data/audio",
     skip_references: bool = False,
+    progress: Optional[Callable[[int, int], None]] = None,
 ) -> str:
     """Extract text from the sources and read it, as written, with one Kokoro voice."""
     parts: List[str] = []
@@ -104,6 +105,8 @@ def read_aloud(
         combined += AudioSegment.from_file(io.BytesIO(audio), format="mp3")
         done += 1
         logger.info(f"Read {done}/{total} chunks")
+        if progress:
+            progress(done, total)
 
     if output_file is None:
         os.makedirs(output_dir, exist_ok=True)

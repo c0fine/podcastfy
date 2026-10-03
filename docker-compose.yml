@@ -48,3 +48,28 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - PYTHONPATH=/app
     command: pytest -n auto --dist loadfile
+
+
+  # Local web UI: drag in a paper, browse generated audio.
+  # Ollama and Kokoro run on the HOST (Kokoro/MLX needs Apple Silicon Metal, which
+  # Linux containers can't use); the container reaches them via host.docker.internal.
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    environment:
+      - OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://host.docker.internal:11434}
+      - KOKORO_BASE_URL=${KOKORO_BASE_URL:-http://host.docker.internal:8000/v1}
+      - PODCASTFY_DATA_DIR=/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8080:8000"   # host 8000 is left free for the Kokoro server
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

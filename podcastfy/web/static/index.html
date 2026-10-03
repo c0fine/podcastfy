@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Podcastfy Local</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --card: #fff; --ink: #1d1d1b; --muted: #6b6a64;
+    --line: #dedcd3; --accent: #2f5d50; --accent-ink: #fff; --err: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151614; --card: #1f201d; --ink: #ecebe5; --muted: #98978f;
+            --line: #33342f; --accent: #7fb8a6; --accent-ink: #10201a; --err: #f2b8b5; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 16px/1.5 system-ui, -apple-system, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 80px; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  h2 { font-size: 1rem; margin: 32px 0 12px; color: var(--muted);
+       text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+          padding: 16px; margin-bottom: 12px; }
+  #drop { border: 2px dashed var(--line); border-radius: 12px; padding: 40px 16px;
+          text-align: center; color: var(--muted); cursor: pointer; background: var(--card); }
+  #drop.over { border-color: var(--accent); color: var(--ink); }
+  #drop strong { color: var(--ink); }
+  .opts { display: grid; gap: 12px; margin-top: 16px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg label { padding: 8px 14px; cursor: pointer; }
+  .seg input { position: absolute; opacity: 0; }
+  .seg label:has(input:checked) { background: var(--accent); color: var(--accent-ink); }
+  .seg label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+  input[type=text], select, textarea { font: inherit; padding: 8px 10px; color: var(--ink);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
+  input[type=text] { min-width: 0; flex: 1; }
+  button { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--line);
+           background: var(--card); color: var(--ink); padding: 8px 14px; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  .hint { font-size: .85rem; color: var(--muted); }
+  .job-title, .item-title { font-weight: 600; overflow-wrap: anywhere; }
+  .meta { font-size: .85rem; color: var(--muted); }
+  progress { width: 100%; margin-top: 8px; accent-color: var(--accent); }
+  .err { color: var(--err); font-size: .9rem; margin-top: 6px; overflow-wrap: anywhere; }
+  audio { width: 100%; margin-top: 10px; }
+  .item-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+  .empty { color: var(--muted); text-align: center; padding: 24px 0; }
+  .link { background: none; border: none; color: var(--muted); padding: 0; text-decoration: underline; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Podcastfy Local</h1>
+  <p class="sub">Drop in a paper. It runs on your own Ollama and Kokoro.</p>
+
+  <div id="drop" tabindex="0" role="button" aria-label="Choose or drop a file">
+    <p><strong>Drag a PDF here</strong> or click to choose one</p>
+    <p class="hint">PDF, .txt or .md</p>
+    <input id="file" type="file" accept=".pdf,.txt,.md" hidden>
+  </div>
+
+  <div class="card opts">
+    <div class="row">
+      <div class="seg" role="radiogroup" aria-label="Mode">
+        <label><input type="radio" name="mode" value="read" checked>Read aloud</label>
+        <label><input type="radio" name="mode" value="podcast">Two-host podcast</label>
+      </div>
+    </div>
+    <div class="row" id="read-opts">
+      <label><input type="checkbox" id="skip"> Stop at References</label>
+      <label>Voice
+        <select id="voice">
+          <option>af_heart</option><option>af_bella</option><option>af_nicole</option>
+          <option>am_michael</option><option>am_adam</option>
+          <option>bf_emma</option><option>bm_george</option>
+        </select>
+      </label>
+    </div>
+    <div class="row" id="podcast-opts" hidden>
+      <label>Ollama model <input type="text" id="llm" placeholder="llama3.1 (default)"></label>
+      <label><input type="checkbox" id="longform"> Long-form</label>
+    </div>
+    <div class="row">
+      <input type="text" id="url" placeholder="…or paste a URL or a path inside the container">
+      <button class="primary" id="go" disabled>Generate</button>
+    </div>
+    <div class="hint" id="chosen"></div>
+    <div class="err" id="formerr" hidden></div>
+  </div>
+
+  <div id="jobs-wrap" hidden>
+    <h2>In progress</h2>
+    <div id="jobs"></div>
+  </div>
+
+  <h2>Library</h2>
+  <div id="library"><div class="empty">Nothing yet.</div></div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let chosen = null;
+
+function setChosen(f) {
+  chosen = f;
+  $("chosen").textContent = f ? `Selected: ${f.name}` : "";
+  refreshGo();
+}
+function refreshGo() { $("go").disabled = !(chosen || $("url").value.trim()); }
+
+$("drop").addEventListener("click", () => $("file").click());
+$("drop").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") $("file").click(); });
+$("file").addEventListener("change", (e) => setChosen(e.target.files[0] || null));
+$("url").addEventListener("input", refreshGo);
+["dragenter", "dragover"].forEach((t) => document.addEventListener(t, (e) => {
+  e.preventDefault(); $("drop").classList.add("over");
+}));
+["dragleave", "drop"].forEach((t) => document.addEventListener(t, (e) => {
+  e.preventDefault(); $("drop").classList.remove("over");
+}));
+document.addEventListener("drop", (e) => {
+  if (e.dataTransfer.files[0]) setChosen(e.dataTransfer.files[0]);
+});
+document.querySelectorAll("input[name=mode]").forEach((r) => r.addEventListener("change", () => {
+  const read = document.querySelector("input[name=mode]:checked").value === "read";
+  $("read-opts").hidden = !read; $("podcast-opts").hidden = read;
+}));
+
+$("go").addEventListener("click", async () => {
+  const fd = new FormData();
+  if (chosen) fd.append("file", chosen);
+  else fd.append("url", $("url").value.trim());
+  fd.append("mode", document.querySelector("input[name=mode]:checked").value);
+  fd.append("voice", $("voice").value);
+  fd.append("skip_references", $("skip").checked);
+  fd.append("longform", $("longform").checked);
+  fd.append("llm_model", $("llm").value);
+  $("go").disabled = true; $("formerr").hidden = true;
+  try {
+    const r = await fetch("/api/jobs", { method: "POST", body: fd });
+    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    setChosen(null); $("file").value = ""; $("url").value = "";
+    refresh();
+  } catch (e) {
+    $("formerr").textContent = e.message; $("formerr").hidden = false;
+  }
+  refreshGo();
+});
+
+function fmtDur(s) {
+  if (!s) return "";
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `${h} h ${m} min` : `${m} min`;
+}
+function el(tag, props = {}, ...kids) {
+  const n = Object.assign(document.createElement(tag), props);
+  kids.forEach((k) => n.append(k));
+  return n;
+}
+const modeLabel = (m) => (m === "podcast" ? "Two-host podcast" : m === "read" ? "Read aloud" : "");
+
+async function refresh() {
+  const [jobs, lib] = await Promise.all([
+    fetch("/api/jobs").then((r) => r.json()), fetch("/api/library").then((r) => r.json()),
+  ]);
+  const active = jobs.filter((j) => j.status !== "done");
+  $("jobs-wrap").hidden = active.length === 0;
+  $("jobs").replaceChildren(...active.map((j) => {
+    const card = el("div", { className: "card" },
+      el("div", { className: "job-title", textContent: j.title }),
+      el("div", { className: "meta",
+        textContent: `${modeLabel(j.mode)} · ${j.status}${j.detail ? " · " + j.detail : ""}` }));
+    if (j.status === "running")
+      card.append(j.progress != null ? el("progress", { max: 1, value: j.progress }) : el("progress"));
+    if (j.status === "error") card.append(el("div", { className: "err", textContent: j.error }));
+    return card;
+  }));
+  renderLibrary(lib);
+  return active.some((j) => j.status === "queued" || j.status === "running");
+}
+
+const playing = () => [...document.querySelectorAll("#library audio")].some((a) => !a.paused);
+function renderLibrary(lib) {
+  const sig = JSON.stringify(lib.map((i) => i.file));
+  if (sig === renderLibrary.sig) return;       // don't rebuild the list (and kill playback) needlessly
+  if (playing()) return;
+  renderLibrary.sig = sig;
+  if (!lib.length) { $("library").replaceChildren(el("div", { className: "empty", textContent: "Nothing yet." })); return; }
+  $("library").replaceChildren(...lib.map((i) => {
+    const audio = el("audio", { controls: true, preload: "none", src: `/audio/${encodeURIComponent(i.file)}` });
+    const del = el("button", { className: "link", textContent: "Delete" });
+    del.addEventListener("click", async () => {
+      if (!confirm(`Delete "${i.title}"?`)) return;
+      await fetch(`/api/library/${encodeURIComponent(i.file)}`, { method: "DELETE" });
+      renderLibrary.sig = null; refresh();
+    });
+    const meta = [modeLabel(i.mode), fmtDur(i.duration), new Date(i.created * 1000).toLocaleString(),
+                  (i.size / 1048576).toFixed(1) + " MB"].filter(Boolean).join(" · ");
+    return el("div", { className: "card" },
+      el("div", { className: "item-head" },
+        el("div", {}, el("div", { className: "item-title", textContent: i.title }),
+                      el("div", { className: "meta", textContent: meta })),
+        del),
+      audio);
+  }));
+}
+
+(async function loop() {
+  let busy = false;
+  try { busy = await refresh(); } catch (e) { /* server restarting */ }
+  setTimeout(loop, busy ? 1500 : 5000);
+})();
+</script>
+</body>
+</html>
