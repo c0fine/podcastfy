@@ -169,3 +169,23 @@ class TestKokoroProvider(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_read_aloud_chunks_keep_text_verbatim():
+    from podcastfy.read_aloud import split_chunks
+
+    text = "A well-\nknown result. It holds.\n\nSecond paragraph here."
+    chunks = split_chunks(text, max_chars=30)
+    assert "" in chunks  # paragraph boundary
+    assert " ".join(c for c in chunks if c).replace("  ", " ") == (
+        "A wellknown result. It holds. Second paragraph here."
+    )
+    assert all(len(c) <= 30 for c in chunks)
+
+
+def test_strip_references_cuts_at_last_heading_only_when_late():
+    from podcastfy.read_aloud import strip_references
+
+    body = "Intro text. " * 50
+    assert strip_references(f"{body}\nReferences\n[1] Foo") == f"{body}\n"
+    assert strip_references("References\nShort doc body " * 1) == "References\nShort doc body "

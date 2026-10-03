@@ -210,6 +210,19 @@ def main(
         "-lf", 
         help="Generate long-form content (only available for text input without images)"
     ),
+    read_aloud_mode: bool = typer.Option(
+        False,
+        "--read-aloud",
+        help="Skip the LLM and read the text as written with one Kokoro voice",
+    ),
+    voice: str = typer.Option(
+        "af_heart", "--voice", help="Kokoro voice used with --read-aloud"
+    ),
+    skip_references: bool = typer.Option(
+        False,
+        "--skip-references",
+        help="With --read-aloud, stop at the References heading (drops the appendix too)",
+    ),
 ):
     """
     Generate a podcast or transcript from a list of URLs, a file containing URLs, a transcript file, image files, or raw text.
@@ -228,6 +241,29 @@ def main(
         if tts_model is None:
             tts_config = load_conversation_config().get("text_to_speech", {})
             tts_model = tts_config.get("default_tts_model", "openai")
+
+        if read_aloud_mode:
+            from podcastfy.read_aloud import read_aloud
+
+            urls_list = urls or []
+            if file:
+                urls_list.extend([line.strip() for line in file if line.strip()])
+            if not urls_list and not text:
+                raise typer.BadParameter("--read-aloud needs --url, --file or --text.")
+            kokoro_cfg = (
+                load_conversation_config()
+                .get("text_to_speech", {})
+                .get("kokoro", {})
+            )
+            audio_file = read_aloud(
+                urls=urls_list,
+                text=text,
+                voice=voice,
+                model=kokoro_cfg.get("model"),
+                skip_references=skip_references,
+            )
+            typer.echo(f"Reading generated successfully: {audio_file}")
+            return
 
         if transcript:
             if image_paths:
