@@ -5,7 +5,8 @@ content_generator:
   ollama:  # used with --local or a model name starting with "ollama/"
     model: "llama3.1"  # any model you have pulled with `ollama pull`
     api_base: "http://localhost:11434"
-    num_ctx: 16384  # context window in tokens; Ollama's default is much smaller
+    num_ctx: 32768  # context window in tokens; Ollama's default is much smaller
+    max_output_tokens: 4096  # reserved for the transcript; the rest of num_ctx holds the input
     max_context_chars: 12000  # cap on conversation context carried between longform parts
   prompt_template: "souzatharsis/podcastfy_multimodal_cleanmarkup"
   prompt_commit: "b2365f11"

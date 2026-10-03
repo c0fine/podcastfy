@@ -818,9 +818,10 @@ class ContentGenerator:
         llm_backend = LLMBackend(
             is_local=is_local,
             temperature=self.config_conversation.get("creativity", 1),
-            max_output_tokens=self.content_generator_config.get(
-                "max_output_tokens", 8192
-            ),
+            max_output_tokens=(
+                ollama_config.get("max_output_tokens") if is_local else None
+            )
+            or self.content_generator_config.get("max_output_tokens", 8192),
             model_name=model_name,
             api_key_label=api_key_label,
             api_base=ollama_config.get("api_base"),
@@ -828,6 +829,14 @@ class ContentGenerator:
         )
 
         self.llm = llm_backend.llm
+        # Ollama silently drops the START of an over-long prompt (the instructions),
+        # so local input is capped to what fits beside the reserved output tokens.
+        self.max_input_chars = None
+        if is_local and ollama_config.get("num_ctx"):
+            budget_tokens = (
+                ollama_config["num_ctx"] - llm_backend.max_output_tokens - 2000
+            )
+            self.max_input_chars = max(budget_tokens, 1000) * 3
         max_context_chars = (
             ollama_config.get("max_context_chars") if is_local else None
         )
@@ -941,6 +950,18 @@ class ContentGenerator:
             Exception: If there's an error in generating content.
         """
         try:
+            if (
+                self.max_input_chars
+                and not longform
+                and len(input_texts) > self.max_input_chars
+            ):
+                logger.warning(
+                    f"Input ({len(input_texts)} chars) exceeds the local context budget; "
+                    f"truncating to {self.max_input_chars} chars. Raise ollama.num_ctx "
+                    "in config.yaml to use more of it."
+                )
+                input_texts = input_texts[: self.max_input_chars]
+
             # Get appropriate strategy
             strategy = self.strategies[longform]
             
